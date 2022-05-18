@@ -1,0 +1,8 @@
+addpath('compute')
+addpath('examples')
+addpath('examples/index_by_application')
+addpath('examples/index_by_method')
+addpath('io')
+addpath('plots')
+addpath('structs')
+addpath('tests')

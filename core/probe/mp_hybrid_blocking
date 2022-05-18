@@ -1,0 +1,243 @@
+#include "mp.h"
+#include "mp_solve.h"
+#include "mp_aux.h"
+#include "mp_probe.h"
+
+/* mp_blocking_mkl_fA                                                         */
+/* probing implementation that uses spmm function for the expansion operation */
+void mp_blocking_mkl_hybrid
+(
+  MPContext *context
+)
+{
+  MPInt p = 0;
+  /* not used thus far */
+  MPInt blk = context->probing.blocking.blk;
+  MPInt m_P = context->m_P;
+  /* arrays used for coarsening */
+  MPInt *temp_array = context->memory_probing;
+  MPInt *temp_i_array = &temp_array[m_P/blk];
+  /* patterns */
+  MPPatternCsr *A_csr = &context->pattern_array.blocking[0];
+  MPPatternCsr *Acoarse_csr = mp_malloc(sizeof *Acoarse_csr);
+  //MPPatternCsr *Acoarse_csr = &context->pattern_array.blocking[1];
+  A_csr->m = context->m_A;
+  A_csr->nz = context->nz_A;
+  Acoarse_csr->m = context->m_A;
+  Acoarse_csr->nz = context->nz_A;
+  /* sparse handles */
+  MPSparseHandle Acoarse_handle;
+  MPSparseHandle A_handle;
+  /* arrays used for extracting entries from patterns */
+
+  Acoarse_csr->rows_start = mp_malloc(sizeof(MPInt)*context->m_A);
+  Acoarse_csr->rows_end = mp_malloc(sizeof(MPInt)*context->m_A);
+  Acoarse_csr->cols = mp_malloc(sizeof(MPInt)*context->nz_A);
+
+  double *Acoarse_data = mp_malloc(sizeof(*Acoarse_data)*A_csr->nz);
+  double *A_data = mp_malloc(sizeof(*A_data)*A_csr->nz);
+  for (MPInt i = 0; i < A_csr->nz; ++i)
+  {
+    Acoarse_data[i] = 1.0;
+    A_data[i] = 1.0;
+  }
+  double *d = NULL;
+  MPInt status = 0;
+  MPInt nr;
+  MPInt nc;
+  sparse_index_base_t index;
+
+  MPSparseCsr *Acoarse = mp_malloc(sizeof(MPSparseCsr));
+  Acoarse->rows_start = Acoarse_csr->rows_start;
+  Acoarse->rows_end = Acoarse_csr->rows_end;
+  Acoarse->cols = Acoarse_csr->cols;
+  Acoarse->data = A_data;
+
+  //status = mkl_sparse_d_create_csr(&A_handle, INDEXING, context->m_A,
+  //  context->m_A, context->A.csr.rows_start, context->A.csr.rows_end,
+  //  context->A.csr.cols, A_data);
+
+  mkl_sparse_copy(context->A_handle, context->A_descr, &A_handle);
+  //mkl_sparse_copy(A_handle, context->A_descr, &Acoarse_handle);
+  context->P = (MPPatternCsr*)mp_malloc(sizeof(MPPatternCsr));
+
+  struct timespec start;
+  struct timespec finish;
+  context->runtime_contract = 0.0;
+
+  if (blk > 1)
+  {
+    context->nz_P = 0;
+    context->m_P = context->m_A;
+    context->P_handle = NULL;
+
+    /* initializes test_array and temp_inverted_array */
+    mp_matrix_i_set(MP_COL_MAJOR, context->m_P/blk, 1, temp_array,
+      context->m_P/blk, 0);
+    mp_matrix_i_set(MP_COL_MAJOR, context->m_P/blk, 1, temp_i_array,
+      context->m_P/blk, -1);
+
+    /* coarsens and expands to approximate S(A^{-1}) */
+    for (p = 0; p < context->n_levels; ++p)
+    {
+      printf("  p: %d (blk: %d, m_P: %d, nz_P: %d)\n",
+        p, context->probing.blocking.blk, context->m_P, context->nz_P);
+
+      /* reorder */
+      if (p > )
+      {
+
+      }
+      else
+      {
+        /* contract */
+        clock_gettime(CLOCK_MONOTONIC, &start);
+        mp_blocking_contract_mkl_2(context->probing.blocking.blk,
+          &context->A_descr, &A_handle, &context->m_P, &context->nz_P,
+          temp_array, temp_i_array, Acoarse);
+        status = mkl_sparse_d_create_csr(&Acoarse_handle, INDEXING, context->m_P,
+          context->m_P, Acoarse->rows_start, Acoarse->rows_end,
+          Acoarse->cols, Acoarse->data);
+        clock_gettime(CLOCK_MONOTONIC, &finish);
+        context->runtime_contract += mp_time(start, finish);
+        printf("  contract_time: %1.4E\n", mp_time(start, finish)); // debug
+      }
+
+      mkl_sparse_destroy(A_handle);
+      status = mkl_sparse_copy(Acoarse_handle, context->A_descr, &A_handle);
+
+      /* expand */
+      clock_gettime(CLOCK_MONOTONIC, &start);
+      if (p > 0)
+      {
+        status = mkl_sparse_destroy(context->P_handle);
+      }
+      //status = mkl_sparse_set_memory_hint(A_handle, SPARSE_MEMORY_AGGRESSIVE);
+      status = mkl_sparse_spmm(SPARSE_OPERATION_NON_TRANSPOSE, Acoarse_handle,
+        A_handle, &context->P_handle);
+      status = mkl_sparse_order(context->P_handle);
+      clock_gettime(CLOCK_MONOTONIC, &finish);
+      context->runtime_expand += mp_time(start, finish);
+      printf("  context->runtime_expand: %1.4E\n", context->runtime_expand);
+
+      /* export */
+      sparse_index_base_t index;
+      mkl_sparse_destroy(Acoarse_handle);
+      mkl_sparse_destroy(A_handle); // testing uncommented
+      status = mkl_sparse_copy(context->P_handle, context->A_descr,
+        &Acoarse_handle);
+      status = mkl_sparse_copy(context->P_handle, context->A_descr,
+        &A_handle);
+
+      /* to get context->nz_P */
+      status = mkl_sparse_d_export_csr(A_handle, &index, &nr, &nc,
+        &A_csr->rows_start, &A_csr->rows_end, &A_csr->cols, (double**)&d);
+        mkl_sparse_destroy(Acoarse_handle);
+    }
+
+    context->runtime_probing = context->runtime_contract
+      + context->runtime_expand;
+  }
+  else if (blk == 1)
+  {
+    context->P_handle = NULL; /* initializes context->P_handle */
+    context->runtime_expand = 0.0;
+    mkl_sparse_copy(A_handle, context->A_descr, &Acoarse_handle);
+    for (p = 0; p < context->n_levels; ++p)
+    {
+      /* reset test_array and temp_inverted_array */
+      mkl_sparse_destroy(context->P_handle);
+      clock_gettime(CLOCK_MONOTONIC, &start);
+      status = mkl_sparse_spmm(SPARSE_OPERATION_NON_TRANSPOSE, Acoarse_handle,
+        A_handle, &context->P_handle);
+      status = mkl_sparse_order(context->P_handle);
+      clock_gettime(CLOCK_MONOTONIC, &finish);
+      context->runtime_expand += mp_time(start, finish);
+      printf("  mp_time: %1.4e\n", mp_time(start, finish));
+      /* copy matrices */
+      mkl_sparse_destroy(A_handle);
+      status = mkl_sparse_copy(context->P_handle, context->A_descr, &A_handle);
+      mkl_sparse_destroy(Acoarse_handle);
+      status = mkl_sparse_copy(context->P_handle, context->A_descr,
+        &Acoarse_handle);
+      /* to get context->nz_P */
+      status = mkl_sparse_d_export_csr(A_handle, &index, &nr, &nc,
+        &A_csr->rows_start, &A_csr->rows_end, &A_csr->cols, (double**)&d);
+    }
+    context->runtime_probing = context->runtime_expand;
+  }
+
+  if ((context->n_levels == 0) && (context->probing.blocking.blk == 1))
+  {
+    status = mkl_sparse_d_export_csr(
+      context->A_handle, &index, &nr, &nc,
+      &((MPPatternCsr*)context->P)->rows_start,
+      &((MPPatternCsr*)context->P)->rows_end,
+      &((MPPatternCsr*)context->P)->cols,
+      (double**)&d);
+
+  }
+  //else if ((context->n_levels == 0) && (context->probing.blocking.blk > 1))
+  //{
+  //  /* initializes test_array and temp_inverted_array */
+  //  mp_matrix_i_set(MP_COL_MAJOR, context->m_P/blk, 1, temp_array,
+  //    context->m_P/blk, 0);
+  //  mp_matrix_i_set(MP_COL_MAJOR, context->m_P/blk, 1, temp_i_array,
+  //    context->m_P/blk, -1);
+
+  //  clock_gettime(CLOCK_MONOTONIC, &start);
+  //  mp_blocking_contract_mkl_2(context->probing.blocking.blk, &context->A_descr,
+  //    &A_handle, &context->m_P, &context->nz_P, temp_array, temp_i_array,
+  //    A_csr);
+  //  clock_gettime(CLOCK_MONOTONIC, &finish);
+
+  //  ((MPPatternCsr*)context->P)->rows_start = A_csr->rows_start;
+  //  ((MPPatternCsr*)context->P)->rows_end = A_csr->rows_end;
+  //  ((MPPatternCsr*)context->P)->cols = A_csr->cols;
+
+  //  printf("((MPPatternCsr*)context->P)->rows_end[0]: %d\n",
+  //    ((MPPatternCsr*)context->P)->rows_end[0]);
+
+  //  context->runtime_contract += mp_time(start, finish);
+  //  context->runtime_probing = context->runtime_contract;
+  //}
+  else
+  {
+    status = mkl_sparse_d_export_csr(
+      context->P_handle, &index, &nr, &nc,
+      &((MPPatternCsr*)context->P)->rows_start,
+      &((MPPatternCsr*)context->P)->rows_end,
+      &((MPPatternCsr*)context->P)->cols,
+      (double**)&d);
+  }
+
+  /* counts nonzeros */
+  p = 0;
+  for (MPInt i = 0; i < context->m_P; ++i)
+  {
+    p += (((MPPatternCsr*)context->P)->rows_end[i]
+          - ((MPPatternCsr*)context->P)->rows_start[i]);
+  }
+  ((MPPatternCsr*)context->P)->m = context->m_P;
+  ((MPPatternCsr*)context->P)->nz = p;
+  context->nz_P = p;
+  printf("context->nz_P: %d\n", context->nz_P);
+
+  //testing thosep
+  //mp_free(A_csr->rows_start);
+  //mp_free(A_csr->rows_end);
+  //mp_free(A_csr->cols);
+  //mp_free(A_csr);
+  //mp_free(Acoarse_csr);
+
+  //context->P_prev = Acoarse_csr;  // has to fix this later
+  mp_free(Acoarse_data);
+  mp_free(A_data);
+  mkl_sparse_destroy(A_handle);
+
+  mp_free(Acoarse_csr->rows_start);
+  mp_free(Acoarse_csr->rows_end);
+  mp_free(Acoarse_csr->cols);
+  mp_free(Acoarse_csr);
+  mp_free(Acoarse);
+}
