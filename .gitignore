@@ -20,3 +20,5 @@ Session.vim
 # auto-generated tag file                                                       
 tags
 .gitattributes
+CMakeFiles
+CMakeFiles/*
